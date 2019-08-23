@@ -1,0 +1,15 @@
+html
+  head
+    meta(charset="UTF-8")
+    meta(name="viewport", content="width=device-width, initial-scale=1.0")
+    meta(http-equiv="X-UA-Compatible", content="ie=edge")
+    title= title
+    style
+        include main.css 
+  body
+    form(action="/recover" method='POST')
+      div Восстановление пароля:
+          input(type="email", name="mail", value="Введите email")
+      div 
+          button(type="submit") Восстановить
+    div.info= msg
