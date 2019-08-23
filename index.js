@@ -34,7 +34,7 @@ let demoUsers = [
 
 async function populateDemo() {
     console.log('БД была заполнена демо-данными');    
-    return await db.collectionpasswords.insertMany(demoUsers)
+    return await db.collection("passwords").insertMany(demoUsers)
 }
                 
 function connectDb() {
@@ -111,15 +111,14 @@ app.post('/recover', async (req, res)=>{
             let res = await db.collection('tokens').insertOne({ token: data.token, user: req.body.mail, expiredAt})
             if (!res) {
                 data.msg = 'Ошибка записи токена, не получен результат записи'
-                res.render('index', data)
+                //res.render('index', data)
             }
             else {
-                data.recoverLink = '/recover?token='+data.token  // "шлем" на почту - выводим ссылку на страницу из шаблона
-                data.msg = 'Введите новый пароль и подтвердите его'
+                //data.recoverLink = '/recover?token='+data.token  // "шлем" на почту - выводим ссылку на страницу из шаблона
+                data.msg = 'Перейдите по ссылке для ввода нового пароля'
             }
         } catch (err) {
             data.msg = 'Ошибка записи токена:' + err
-            res.render('index', data)
         }        
         
     } else {
@@ -129,14 +128,20 @@ app.post('/recover', async (req, res)=>{
     }
        // })
     // если есть: 
-    res.render('newPassword', data)
+    res.render('index', data)
     console.log(`POST запрос: ${req.body.mail}`); 
 })
 
 // прием токена по ссылке
-app.get('/recover=:token', (req, res)=>{
-    // выводим страницу с формой ввода нового пароля, кнопка направляет
+app.get('/recover/:token', (req, res)=>{
+    // выводим страницу с формой ввода нового пароля
+    res.render('newPassword', {token: req.params.token})
     console.log(`Передан токен ${req.params.token}`); 
+})
+
+// прием формы с новым паролем, проверка, запись нового пароля, авторизация 
+app.post('/confirm', (req, res)=>{
+    console.log(`Передан новый пароль: ${req.params.password}`)
 })
 
 

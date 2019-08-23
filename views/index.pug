@@ -7,9 +7,16 @@ html
     style
         include main.css 
   body
-    form(action="/recover" method='POST')
-      div Восстановление пароля:
-          input(type="email", name="mail", value="Введите email")
-      div 
-          button(type="submit") Восстановить
-    div.info= msg
+    // если задан токен, выводим только ссылку на переход
+    if token
+      .recoverLink
+        a(href="/recover/"+token) Перейти на страницу восстановления
+      // если токена нет, это просто стартовая страница
+    else
+      form(action="/recover" method='POST')
+        div Восстановление пароля:
+            input(type="email", name="mail", value="Введите email")
+        div 
+            button(type="submit") Восстановить
+    .info= msg
+      
