@@ -1,87 +1,66 @@
 const express = require('express')
-const assert = require('assert');
+const passport = require('passport')
+const LocalStrategy = require('passport-local').Strategy
+const session = require('express-session')
+
+
+const AppDB = require('./db.js')
+const Mail = require('./mail.js')
 
 const app = express();
-const MongoClient = require('mongodb').MongoClient
-const url = 'mongodb://localhost:27017'
 
 app.set('view engine', 'pug');
-app.use(express.urlencoded());
+app.use(express.urlencoded({extended: true}));
 
-const client = new MongoClient(url)
-let db
+// = = = PASSPORT = = =
+app.use(session({secret: 'mySecretKey', cookie: {maxAge: 60000}, resave: false, saveUninitialized: false}));
+app.use(passport.initialize());
+app.use(passport.session());
 
-let demoUsers = [
-    {
-        id: 1,
-        name: "Василий З.",
-        email: 'vasya@gmail.com',
-        password: '123456'
-    },
-    {
-        id: 2,
-        name: "Петр И.",
-        email: 'petya@gmail.com',
-        password: 'asdfqwer'
-    },
-    {
-        id: 3,
-        name: "Света А.",
-        email: 'sveta@gmail.com',
-        password: 'qazwsxedc'
-    }
-]
-
-async function populateDemo() {
-    console.log('БД была заполнена демо-данными');    
-    return await db.collection("passwords").insertMany(demoUsers)
-}
-             
-async function fillDemoDataWhenFirst() {
-    // всегда смотрим в базу и проверяем если ли там пользователи
-    let num = await db.collection('passwords').countDocuments({}) //, (err,num) => {
-    
-    if (num == 0) { // если записей нет, заполняем демо-данными
-        await populateDemo()        
-    }
-    
-    let msg = num == 0 ? 'Обнаружен первый запуск. БД была заполнена демо-данными' : ''
-
-    return msg
-}
-   
-function connectDb() {
-    client.connect(err => {
-        if (err) {
-            console.log('Не подключились к БД');            
+passport.use(new LocalStrategy({
+        usernameField: 'token',
+        passwordField: 'password',
+        passReqToCallback: true
+    }, async (req, username, password, done) => {
+        let tokenInfo = await app.locals.db.collection('tokens').findOne({token: username})
+        if (tokenInfo) {
+            let user = tokenInfo.user
+            return user 
+                ? done(null, user) 
+                : done(null, false, req.flash(`Пользователь ${user} не найден`))
         }
-        else {
-            try {
-                db = client.db('passwordStore') 
-                //passwords = db.collection('passwords')               
-                console.log('= = = Соединение с БД установлено, входите: http://localhost:3000')                                            
-            } catch (error) {
-                console.log('ОШИБКА: '+error);
-            }            
-        }
-    })
-}
+    }
+))
+
+passport.serializeUser(function(user, done) {
+    done(null, user.email);
+});
+
+passport.deserializeUser(function(id, done) {
+    app.locals.db.collection('passwords').findOne({_id: id}, (err, user) => {
+        done(err, user);
+    });
+});
+
+
+
 
 // =========================================
 // основная страница, поле для ввода емейла
 app.get('/', (req,res)=>{
     // проверяем первый ли запуск, заполняем данными
-    fillDemoDataWhenFirst()
+    AppDB.fillDemoDataWhenFirst(app.locals.db)
         .then(r => {
             res.render('index', { r }) // выводим шаблон главной страницы
             
             console.log('Запрошена главная страница'); 
         })
+    res.render('index', {})
 })
 
 
 async function checkEmail(email) {
-    return await db.collection('passwords').findOne({email})
+    return await app.locals.db.collection('passwords').findOne({email})
 }
 
 function getToken() {
@@ -100,7 +79,8 @@ app.post('/recover', async (req, res)=>{
         token: ''
     }
     // проверяем есть ли емейл в базе
-    let r = await checkEmail(req.body.mail)
+    let email = req.body.email
+    let r = await checkEmail(email)
     if (r) { // есть мыло
         
         data.token = await getToken()  // генерим тут токен
@@ -108,7 +88,7 @@ app.post('/recover', async (req, res)=>{
         expiredAt.setHours(expiredAt.getHours()+1)
         // записываем в базу {user_id, token, expireAt}
         try {
-            let res = await db.collection('tokens').insertOne({ token: data.token, user: req.body.mail, isActive: true, expiredAt})
+            let res = await app.locals.db.collection('tokens').insertOne({ token: data.token, user: email, isActive: true, expiredAt})
             if (!res) {
                 data.msg = 'Ошибка записи токена, не получен результат записи'
                 //res.render('index', data)
@@ -116,6 +96,8 @@ app.post('/recover', async (req, res)=>{
             else {
                 //data.recoverLink = '/recover?token='+data.token  // "шлем" на почту - выводим ссылку на страницу из шаблона
                 data.msg = 'Перейдите по ссылке для ввода нового пароля'
+                // nodemailer: отправить письмо
+                Mail.sendMail(email, token)
             }
         } catch (err) {
             data.msg = 'Ошибка записи токена:' + err
@@ -129,14 +111,15 @@ app.post('/recover', async (req, res)=>{
        // })
     // если есть: 
     res.render('index', data)
-    console.log(`POST запрос: ${req.body.mail}`); 
+    console.log(`POST запрос: ${email}`); 
 })
 
+// 
 // прием токена по ссылке
-app.get('/recover/:token', (req, res)=>{
+app.get('/recover/:token', async (req, res)=> {
     // найти токен в базе, проверить дату
     let msg = 'msg init'
-    tokenInfo = await db.collection('tokens').findOne({token: req.params.token})
+    tokenInfo = await app.locals.db.collection('tokens').findOne({token: req.params.token})
     if (tokenInfo) {
         if (tokenInfo.expiredAt < new Date()) {
             msg = 'Срок действия ссылки для смены пароля истек, получите новую ссылку'
@@ -154,44 +137,74 @@ app.get('/recover/:token', (req, res)=>{
     console.log(`Передан токен ${req.params.token}, Сообщение: ${msg}`); 
 })
 
+const auth = (req, res, next) => {
+    passport.authenticate('local', (err,user,info) => {
+        if (err) {
+            console.log('Ошибка АУТЕНТИФИКАЦИИ');
+            res.status(401).send(error)
+            //res.render('index', {msg: `Ошибка смены пароля, ${err}`})
+        } else if (!user) {
+            console.log('АУТЕНТИФИКАЦИЯ НЕ прошла!');
+            res.status(401).send(info)
+            //res.render('index', {msg: 'Пользователь авторизован, пароль изменен'})
+        }
+        else next()
+        // if (!user && !err) {
+        //     console.log('Аутентификация: '+info);
+        // }
+    })(req, res, next)
+}
+
 // прием формы с новым паролем, проверка, запись нового пароля, авторизация 
-app.post('/confirm', (req, res)=>{
+app.post('/confirm', auth, async (req, res, next)=>{
     // Проверяем пароль на проверки
     let data = {
-        msg: ''
+        msg: '',
+        token: req.body.token
     }
-    if (req.params.password != req.params.passwordConfirm) {
+    if (req.body.password != req.body.passwordConfirm) {
         data.msg = 'Пароли не совпадают, введите повторно'
     }
-    else if (req.params.password.length < 5) {
+    else if (req.body.password.length < 5) {
         data.msg = 'Длина пароля должна быть не менее 5 симолов'
     }
     else {
         // находим по токену пользователя и его емейл
-        db.collection('tokens').findOne({token: req.params.token})
-            .then(userInfo => {
+        if (data.token  == "") {
+            msg = "Токен запроса отсутствует"
+        }
+        else {
+            let userInfo = await app.locals.db.collection('tokens').findOne({token: data.token})
+            if (userInfo) {
                 // записываем новый пароль в пользователя, 
-                db.collection('passwords').update({email: userInfo.email}, {$set: {password: req.params.password}})
-                    .then(r => {
-                        // помечаем токен как использованный
-                        db.collection('tokens').update({token: req.params.token}, {$set: {isActive: false}})
-                            .then(r => {
-                                // логииним через пасспорт
-
-                            })
-                    })
+                let upd = await app.locals.db.collection('passwords').updateOne({email: userInfo.user}, {$set: {password: req.body.password}})
+                if (upd.result.ok == 1) {
+                       // помечаем токен как использованный
+                    let tokenUpd = await app.locals.db.collection('tokens').updateOne({token: data.token}, {$set: {isActive: false}})
+                    if (tokenUpd.result.ok == 1) {
+                         // логииним через пасспорт
+                         
+                    }           
+                } else {
+                    msg = `Ошибка при обновлении пароля: ${upd.message}`
+                }
             }
+            else {
+                msg = `Токен ${data.token} не найден в базе`
+            }
+        }        
     }
-    console.log(`Передан новый пароль: ${req.params.password}`)
+    res.render('newPassword', data)
+    console.log(`Передан новый пароль: ${req.body.password}`)
 })
 
 
-app.listen(3000, ()=>{
+app.listen(3000, async ()=>{
     console.log('------ Приложение запущено на 3000 порту');
-    connectDb()    
+    await AppDB.connectDb(app)        
 })
 
-process.on("SIGINT", () => {
-    dbClient.close();
-    process.exit();
-});
+
+
+
+
