@@ -1,4 +1,5 @@
 const mailer = require('nodemailer');
+const pug = require('pug');
 
 const transport = mailer.createTransport({
     host: "smtp.mailtrap.io",
@@ -17,8 +18,9 @@ const mailOptions = {
     html: '' // генерировать по шаблону
 };
 
-exports.sendMail = (to) => {
+exports.sendMail = (to, token) => {
     mailOptions.to = to
+    mailOptions.html = pug.renderFile('/mail_templates/tmpl_main.pug', {link: '/recover/'+token})
     transport.sendMail(mailOptions, (error, info) => {
         if (error) {
           return console.log(error);
