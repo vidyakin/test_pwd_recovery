@@ -1,6 +1,8 @@
 const mailer = require('nodemailer');
 const pug = require('pug');
 
+const server = 'localhost:3000'
+
 const transport = mailer.createTransport({
     host: "smtp.mailtrap.io",
     port: 2525,
@@ -15,16 +17,18 @@ const mailOptions = {
     to: '',
     subject: 'Восстановление пароля',
     text: '', 
-    html: '' // генерировать по шаблону
+    html: ''
 };
 
-exports.sendMail = (to, token) => {
+exports.sendMail = (to, token, done) => {
+    let options = {link: `http://${server}/recover/${token}`}
     mailOptions.to = to
-    mailOptions.html = pug.renderFile('/mail_templates/tmpl_main.pug', {link: '/recover/'+token})
+    mailOptions.html = pug.renderFile('./mail_templates/tmpl_main.pug', options)
     transport.sendMail(mailOptions, (error, info) => {
         if (error) {
-          return console.log(error);
+          console.log(error);
         }
-        console.log('Message sent: %s', info.messageId);
+        console.log('Message sent: %s, link: %s', info.messageId, options.link);
+        done(info)
       });
 }

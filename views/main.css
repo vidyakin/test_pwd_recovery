@@ -9,3 +9,9 @@ body {
 form div {
     margin: 10px;
 }
+
+.time {
+    border: 1px solid lightpink;
+    border-radius: 5px;
+    padding: 5px;
+}

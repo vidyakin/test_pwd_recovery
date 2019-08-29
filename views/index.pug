@@ -7,16 +7,20 @@ html
     style
         include main.css 
   body
-    // если задан токен, выводим только ссылку на переход
-    if token
+    // вариант когда не шлем письмо а показываем ссылку сразу - если задан токен, выводим только ссылку на переход
+    //if token 
       .recoverLink
         a(href="/recover/"+token) Перейти на страницу восстановления
-      // если токена нет, это просто стартовая страница
+    // когда послали письмо
+    if sent 
+      .sentLetter= msg
     else
       form(action="/recover" method='POST')
         div Восстановление пароля:
-            input(type="email", name="mail", value="Введите email")
+            input(type="email", name="email", value="Введите email")
         div 
             button(type="submit") Восстановить
-    .info= msg
+      .info= msg
+    if time
+      .time= time
       

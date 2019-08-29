@@ -13,13 +13,12 @@ app.set('view engine', 'pug');
 app.use(express.urlencoded({extended: true}));
 
 // = = = PASSPORT = = =
-app.use(session({secret: 'mySecretKey', cookie: {maxAge: 60000}, resave: false, saveUninitialized: false}));
+app.use(session({secret: 'mySecretKey', cookie: {maxAge: 10*60*1000}, resave: false, saveUninitialized: false}));
 app.use(passport.initialize());
 app.use(passport.session());
 
 passport.use(new LocalStrategy({
-        usernameField: 'token',
-        passwordField: 'password',
+        usernameField: 'email',
         passReqToCallback: true
     }, async (req, username, password, done) => {
         let tokenInfo = await app.locals.db.collection('tokens').findOne({token: username})
@@ -33,11 +32,13 @@ passport.use(new LocalStrategy({
 ))
 
 passport.serializeUser(function(user, done) {
-    done(null, user.email);
+    console.log('Cериализация: ',user);
+    done(null, user);
 });
 
-passport.deserializeUser(function(id, done) {
-    app.locals.db.collection('passwords').findOne({_id: id}, (err, user) => {
+passport.deserializeUser(function(email, done) {
+    console.log('Десериализация: ',email);    
+    app.locals.db.collection('passwords').findOne({email}, (err, user) => {
         done(err, user);
     });
 });
@@ -48,14 +49,18 @@ passport.deserializeUser(function(id, done) {
 // =========================================
 // основная страница, поле для ввода емейла
 app.get('/', (req,res)=>{
+    // console.log('Запрошена главная страница');
+    // let data = { msg: '', time: new Date() }
+    // res.render('index', data) // выводим шаблон главной страницы
     // проверяем первый ли запуск, заполняем данными
     AppDB.fillDemoDataWhenFirst(app.locals.db)
         .then(r => {
-            res.render('index', { r }) // выводим шаблон главной страницы
-            
-            console.log('Запрошена главная страница'); 
-        })
-    res.render('index', {})
+            console.log('Запрошена главная страница');
+            res.render('index', { msg: r, time: new Date() }) // выводим шаблон главной страницы
+        }).catch(err => {
+            console.log('Ошибка рендера главной страницы ', err);            
+            res.render('index', {msg: err})
+        })   
 })
 
 
@@ -76,42 +81,46 @@ app.post('/recover', async (req, res)=>{
     let data = { 
         recoverLink: '',
         msg: '',
-        token: ''
+        token: '',
+        sent: false
     }
     // проверяем есть ли емейл в базе
     let email = req.body.email
-    let r = await checkEmail(email)
-    if (r) { // есть мыло
+    let emailExists = await checkEmail(email)
+    if (emailExists) { // есть мыло
         
         data.token = await getToken()  // генерим тут токен
         let expiredAt = new Date()
         expiredAt.setHours(expiredAt.getHours()+1)
-        // записываем в базу {user_id, token, expireAt}
         try {
-            let res = await app.locals.db.collection('tokens').insertOne({ token: data.token, user: email, isActive: true, expiredAt})
-            if (!res) {
+            // записываем в базу {user_id, token, expireAt}
+            let newToken = await app.locals.db.collection('tokens').insertOne({ token: data.token, user: email, isActive: true, expiredAt})
+            if (!newToken) {
                 data.msg = 'Ошибка записи токена, не получен результат записи'
-                //res.render('index', data)
+                res.render('index', data)
             }
             else {
                 //data.recoverLink = '/recover?token='+data.token  // "шлем" на почту - выводим ссылку на страницу из шаблона
-                data.msg = 'Перейдите по ссылке для ввода нового пароля'
-                // nodemailer: отправить письмо
-                Mail.sendMail(email, token)
+                Mail.sendMail(email, data.token, sentInfo => {
+                    data.msg = 'Письмо было отправлено на почту, перейдите по ссылке в нем, чтобы продолжить'
+                    data.sent = true                
+                    // в БД лог отправки
+                    app.locals.db.collection('email_logs').insertOne({ token: data.token, user: email, sent: sentInfo.messageId, time: new Date()})
+                    res.render('index', data)
+                    console.log('ПИСЬМО ОТПРАВЛЕНО');
+                })
             }
         } catch (err) {
-            data.msg = 'Ошибка записи токена:' + err
-        }        
-        
+            data.msg = 'Ошибка записи токена:' + err.message
+            res.render('index', data)
+        }
     } else {
         // нет мыла
         data.msg = 'Такой email не найден. Зарегистрируйтесь'
         res.render('index', data)
     }
-       // })
     // если есть: 
-    res.render('index', data)
-    console.log(`POST запрос: ${email}`); 
+    console.log(`POST запрос на получение письма: ${email}, отправлено: ${data.sent}`); 
 })
 
 // 
@@ -139,7 +148,7 @@ app.get('/recover/:token', async (req, res)=> {
 
 const auth = (req, res, next) => {
     passport.authenticate('local', (err,user,info) => {
-        if (err) {
+        if (err !== null) {
             console.log('Ошибка АУТЕНТИФИКАЦИИ');
             res.status(401).send(error)
             //res.render('index', {msg: `Ошибка смены пароля, ${err}`})
@@ -156,24 +165,29 @@ const auth = (req, res, next) => {
 }
 
 // прием формы с новым паролем, проверка, запись нового пароля, авторизация 
-app.post('/confirm', auth, async (req, res, next)=>{
+app.post('/confirm', async (req, res, next)=>{
     // Проверяем пароль на проверки
     let data = {
         msg: '',
-        token: req.body.token
+        token: req.body.token,
+        status: ''
     }
     if (req.body.password != req.body.passwordConfirm) {
         data.msg = 'Пароли не совпадают, введите повторно'
+        data.status = 'NOT_MATCH'
     }
     else if (req.body.password.length < 5) {
         data.msg = 'Длина пароля должна быть не менее 5 симолов'
+        data.status = 'LESS_5'
     }
     else {
         // находим по токену пользователя и его емейл
         if (data.token  == "") {
             msg = "Токен запроса отсутствует"
+            data.status = 'TOKEN_EMPTY'
         }
         else {
+            // находим какому пользователю соответствует токен
             let userInfo = await app.locals.db.collection('tokens').findOne({token: data.token})
             if (userInfo) {
                 // записываем новый пароль в пользователя, 
@@ -183,19 +197,35 @@ app.post('/confirm', auth, async (req, res, next)=>{
                     let tokenUpd = await app.locals.db.collection('tokens').updateOne({token: data.token}, {$set: {isActive: false}})
                     if (tokenUpd.result.ok == 1) {
                          // логииним через пасспорт
-                         
+                        data.msg = `Пароль изменен на ${req.body.password}`
+                        data.status = 'PWD_UPD_OK'
+                        req.logIn(userInfo.user, err => {
+                            if (err) {
+                                data.msg = `Ошибка при авторизации пользователя: ${err}`
+                                data.status = 'LOGIN_OK'
+                                console.log('Ошибка залогинивания ', err);
+                                return next(err)
+                            }
+                            return res.redirect('/recovered')
+                         })
                     }           
                 } else {
-                    msg = `Ошибка при обновлении пароля: ${upd.message}`
+                    data.msg = `Ошибка при обновлении пароля: ${upd.message}`
+                    data.status = 'PWD_UPD_ERR'
                 }
             }
             else {
-                msg = `Токен ${data.token} не найден в базе`
+                data.msg = `Токен ${data.token} не найден в базе`
+                data.status = 'NO_TOKEN'
             }
         }        
     }
-    res.render('newPassword', data)
-    console.log(`Передан новый пароль: ${req.body.password}`)
+    //res.render('newPassword', data)
+    console.log(`Передан новый пароль: ${req.body.password}, событие ${data.status}`)
+})
+
+app.get('/recovered', auth, (req,res) => {
+    render('recovered')
 })
 
 
