@@ -26,19 +26,13 @@ const demoUsers = [
 
 exports.connectDb = async (app) => {
   const client = await new MongoClient(url, { useNewUrlParser: true, useUnifiedTopology: true }).connect()
-  if (client) {
-    // .then( client => {
+  if (!client) {
+    throw Error("No connection to database")
+  }
+  else {
     app.locals.db = client.db('passwordStore')
     app.locals.dbClient = client
-    // passwords = db.collection('passwords')
     console.log('= = = Соединение с БД установлено, входите: http://localhost:3000')
-    // return {client, db}
-    // })
-  } else {
-    // .catch(err => {
-    console.log('ОШИБКА: ' + err)
-    // return null
-    //   })
   }
 }
 
@@ -49,9 +43,10 @@ exports.populateDemo = async (db) => {
 
 exports.fillDemoDataWhenFirst = async (db) => {
   // всегда смотрим в базу и проверяем если ли там пользователи
-  const num = await db.collection('passwords').countDocuments({}) //, (err,num) => {
+  const num = await db.collection('passwords').countDocuments({})
 
-  if (num === 0) { // если записей нет, заполняем демо-данными
+  if (num === 0) { 
+    // если записей нет, заполняем демо-данными
     await populateDemo(db)
   }
 

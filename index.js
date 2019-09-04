@@ -31,13 +31,11 @@ passport.use(new LocalStrategy({
 ))
 
 passport.serializeUser(function (user, done) {
-  console.log('Cериализация: ', user)
   done(null, user)
 })
 
 passport.deserializeUser(function (email, done) {
-  console.log('Десериализация: ', email)
-  app.locals.db.collection('passwords').findOne({ email }, (err, user) => {
+  app.locals.db.collection('users').findOne({ email }, (err, user) => {
     done(err, user)
   })
 })
@@ -45,10 +43,6 @@ passport.deserializeUser(function (email, done) {
 // =========================================
 // основная страница, поле для ввода емейла
 app.get('/', (req, res) => {
-  // console.log('Запрошена главная страница');
-  // let data = { msg: '', time: new Date() }
-  // res.render('index', data) // выводим шаблон главной страницы
-  // проверяем первый ли запуск, заполняем данными
   AppDB.fillDemoDataWhenFirst(app.locals.db)
     .then(r => {
       console.log('Запрошена главная страница')
@@ -58,10 +52,6 @@ app.get('/', (req, res) => {
       res.render('index', { msg: err })
     })
 })
-
-async function checkEmail (email) {
-  return app.locals.db.collection('passwords').findOne({ email })
-}
 
 function getToken () {
   return new Promise((resolve, reject) => {
@@ -78,28 +68,35 @@ app.post('/recover', async (req, res) => {
     token: '',
     sent: false
   }
+  
   // проверяем есть ли емейл в базе
   const email = req.body.email
-  const emailExists = await checkEmail(email)
-  if (emailExists) { // есть мыло
+  const emailExists = await app.locals.db.collection('users').findOne({ email })
+  
+  if (emailExists) { 
     data.token = await getToken() // генерим тут токен
-    const expiredAt = new Date()
-    expiredAt.setHours(expiredAt.getHours() + 1)
+    
+    const expiresAt = new Date()
+    expiresAt.setHours(expiresAt.getHours() + 1) // TODO: подключить moment.js
+    
     try {
       // записываем в базу {user_id, token, expireAt}
-      const newToken = await app.locals.db.collection('tokens').insertOne({ token: data.token, user: email, isActive: true, expiredAt })
+      const newToken = await app.locals.db.collection('tokens').insertOne({ token: data.token, user: email, isActive: true, expiresAt })
       if (!newToken) {
         data.msg = 'Ошибка записи токена, не получен результат записи'
         res.render('index', data)
       } else {
-        // data.recoverLink = '/recover?token='+data.token  // "шлем" на почту - выводим ссылку на страницу из шаблона
-        Mail.sendMail(email, data.token, sentInfo => {
+        
+        // "шлем" на почту - выводим ссылку на страницу из шаблона
+        // пишем в БД лог отправки
+        app.locals.db.collection('email_logs').insertOne({ token: data.token, user: email, sent: sentInfo.messageId, time: new Date() })
+        
+        // TODO: убрать коллбэки
+        Mail.sendMail(email, "Восстановление пароля", "tmpl_main", data.token, sentInfo => {
+          // TODO: https://gitlab.com/nicky000/mindcast/merge_requests/1#note_211718777 - доработать обновление лога 
           data.msg = 'Письмо было отправлено на почту, перейдите по ссылке в нем, чтобы продолжить'
           data.sent = true
-          // в БД лог отправки
-          app.locals.db.collection('email_logs').insertOne({ token: data.token, user: email, sent: sentInfo.messageId, time: new Date() })
           res.render('index', data)
-          console.log('ПИСЬМО ОТПРАВЛЕНО')
         })
       }
     } catch (err) {
@@ -107,22 +104,25 @@ app.post('/recover', async (req, res) => {
       res.render('index', data)
     }
   } else {
-    // нет мыла
+    // нет емейла в базе 
     data.msg = 'Такой email не найден. Зарегистрируйтесь'
     res.render('index', data)
   }
-  // если есть:
+  // TODO: сделать вывод в консоль только в dev-mode (как?)
   console.log(`POST запрос на получение письма: ${email}, отправлено: ${data.sent}`)
 })
 
-//
-// прием токена по ссылке
+/**
+ * Прием токена по ссылке
+ */
 app.get('/recover/:token', async (req, res) => {
+  
   // найти токен в базе, проверить дату
   let msg = 'msg init'
   const tokenInfo = await app.locals.db.collection('tokens').findOne({ token: req.params.token })
+  
   if (tokenInfo) {
-    if (tokenInfo.expiredAt < new Date()) {
+    if (tokenInfo.expiresAt < new Date()) {
       msg = 'Срок действия ссылки для смены пароля истек, получите новую ссылку'
       res.render('index', { token: req.params.token, msg })
     } else { // ВСЕ ОК
@@ -133,9 +133,10 @@ app.get('/recover/:token', async (req, res) => {
     res.render('index', { token: req.params.token, msg })
   }
   // выводим страницу с формой ввода нового пароля
-  console.log(`Передан токен ${req.params.token}, Сообщение: ${msg}`)
+  //console.log(`Передан токен ${req.params.token}, Сообщение: ${msg}`)
 })
 
+// m/ware проверки аутентентификации
 const auth = (req, res, next) => {
   passport.authenticate('local', (err, user, info) => {
     if (err !== null) {
@@ -169,6 +170,7 @@ app.post('/confirm', async (req, res, next) => {
     data.status = 'LESS_5'
   } else {
     // находим по токену пользователя и его емейл
+    // TODO: переписать без вложенности, через проверку статуса https://gitlab.com/nicky000/mindcast/merge_requests/1#note_211732113
     if (data.token === '') {
       data.msg = 'Токен запроса отсутствует'
       data.status = 'TOKEN_EMPTY'
@@ -177,7 +179,7 @@ app.post('/confirm', async (req, res, next) => {
       const userInfo = await app.locals.db.collection('tokens').findOne({ token: data.token })
       if (userInfo) {
         // записываем новый пароль в пользователя,
-        const upd = await app.locals.db.collection('passwords').updateOne({ email: userInfo.user }, { $set: { password: req.body.password } })
+        const upd = await app.locals.db.collection('users').updateOne({ email: userInfo.user }, { $set: { password: req.body.password } })
         if (upd.result.ok === 1) {
           // помечаем токен как использованный
           const tokenUpd = await app.locals.db.collection('tokens').updateOne({ token: data.token }, { $set: { isActive: false } })
@@ -206,7 +208,10 @@ app.post('/confirm', async (req, res, next) => {
     }
   }
   // res.render('newPassword', data)
-  console.log(`Передан новый пароль: ${req.body.password}, событие ${data.status}`)
+  // TODO: сделать глобальную функцию переопределяющую/восстанавливающую консоль.лог для запрета вывода в продакшене
+  // http://qaru.site/questions/16981/how-to-quickly-and-conveniently-disable-all-consolelog-statements-in-my-code
+  // ...или писать тесты
+  // console.log(`Передан новый пароль: ${req.body.password}, событие ${data.status}`)
 })
 
 app.get('/recovered', auth, (req, res) => {
